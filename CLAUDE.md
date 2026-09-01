@@ -39,7 +39,10 @@ local PostgreSQL database.
 ```
 api/                  CRD type definitions
   v1alpha5/           Current API version (Backstage types, deepcopy)
-  v1alpha1-4/         Previous API versions (kept for conversion)
+  v1alpha1/           Previous API versions (kept for conversion)
+  v1alpha2/
+  v1alpha3/
+  v1alpha4/
   current-types.go    Re-exports for the current version
 cmd/                  Operator entrypoint (main.go)
 internal/controller/  Reconciliation loop, status, watchers, platform
@@ -135,6 +138,8 @@ When writing tests, follow the existing patterns:
 
 ## CI Workflows (GitHub Actions)
 
+Key workflows (9 of 17):
+
 | Workflow | Trigger | What it checks |
 |---|---|---|
 | `pr.yaml` | PR to `main` / `release-*` | Build, lint, unit tests, integration tests (Kind cluster), gosec |
@@ -168,11 +173,11 @@ build/test/lint jobs (see `pr.yaml` changed-files filter).
 
 1. The `BackstageReconciler` in `internal/controller/` watches
    `Backstage` CRs and referenced ConfigMaps/Secrets.
-2. The spec preprocessor resolves dynamic plugin references (`ref://`,
-   `{{inherit}}`), merges default and user-provided plugin configs.
+2. The spec preprocessor merges default and user-provided plugin configs.
 3. The `pkg/model` package builds the desired runtime object model
    (Deployment, Services, DB resources, etc.) from the three config
-   layers.
+   layers. During this phase, `dynamic-plugins-reference.go` resolves
+   `ref://` and `{{inherit}}` plugin URL references.
 4. The controller applies objects to the cluster using server-side apply
    with the `backstage-controller` field manager.
 5. Status is updated with `Deployed`, `DeployFailed`,

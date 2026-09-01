@@ -152,8 +152,8 @@ Key workflows (9 of 17):
 | `nightly-upgrade-test.yaml` | Schedule | Upgrade path tests |
 | `next-container-build.yaml` | Push to main | Build and push `next` images |
 
-PRs that only change `**/*.md` or `.rhdh/**` files skip the Go
-build/test/lint jobs (see `pr.yaml` changed-files filter).
+PRs that only change `**/*.md`, `**/*.adoc`, or `.rhdh/**` files skip
+the Go build/test/lint jobs (see `pr.yaml` changed-files filter).
 
 ## PR and Commit Conventions
 
@@ -185,11 +185,14 @@ build/test/lint jobs (see `pr.yaml` changed-files filter).
 
 ### Profile System
 
-Profiles live under `config/profile/<name>/` and
-`config/manifests/<name>/`. Each profile provides:
+Profiles live under `config/profile/<name>/` and provide:
 - Default-config directory with Kubernetes manifest templates
 - Kustomize overlays for deployment
-- OLM bundle metadata
+
+Profiles with OLM bundle metadata (currently `backstage.io` and `rhdh`)
+also have entries under `config/manifests/<name>/`. Not all profiles
+have manifests entries (e.g., `external` has a profile but no manifests
+directory).
 
 The `PROFILE` variable (`rhdh` by default) selects which profile is
 used for `make test`, `make deploy`, `make bundle`, etc.

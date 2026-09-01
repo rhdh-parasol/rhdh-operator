@@ -175,8 +175,8 @@ build/test/lint jobs (see `pr.yaml` changed-files filter).
    layers.
 4. The controller applies objects to the cluster using server-side apply
    with the `backstage-controller` field manager.
-5. Status is updated with `Deployed`, `DeployFailed`, or
-   `DeployInProgress` conditions.
+5. Status is updated with `Deployed`, `DeployFailed`,
+   `DeployInProgress`, or `Idled` conditions.
 
 ### Profile System
 

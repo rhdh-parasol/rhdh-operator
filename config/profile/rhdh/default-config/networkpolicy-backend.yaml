@@ -1,0 +1,32 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: backstage # placeholder for 'backstage-<cr-name>'
+spec:
+  podSelector:
+    matchLabels:
+      rhdh.redhat.com/app: # placeholder for 'backstage-<cr-name>'
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - ports:
+        - port: 7007
+          protocol: TCP
+        - port: 9464
+          protocol: TCP
+  egress:
+    # DNS resolution (standard and mDNS)
+    - ports:
+        - port: 53
+          protocol: TCP
+        - port: 53
+          protocol: UDP
+        - port: 5353
+          protocol: TCP
+        - port: 5353
+          protocol: UDP
+    # HTTPS outbound (K8s API server, external plugins, auth providers, etc.)
+    - ports:
+        - port: 443
+          protocol: TCP

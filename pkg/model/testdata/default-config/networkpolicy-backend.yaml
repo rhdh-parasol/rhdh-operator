@@ -1,0 +1,30 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: backstage
+spec:
+  podSelector:
+    matchLabels:
+      rhdh.redhat.com/app: ""
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - ports:
+        - port: 7007
+          protocol: TCP
+        - port: 9464
+          protocol: TCP
+  egress:
+    - ports:
+        - port: 53
+          protocol: TCP
+        - port: 53
+          protocol: UDP
+        - port: 5353
+          protocol: TCP
+        - port: 5353
+          protocol: UDP
+    - ports:
+        - port: 443
+          protocol: TCP

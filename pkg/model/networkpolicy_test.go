@@ -38,15 +38,15 @@ func TestDefaultNetworkPoliciesLocalDbEnabled(t *testing.T) {
 	// Verify backend policy
 	backendNP := nps.BackendNetworkPolicy()
 	assert.NotNil(t, backendNP, "Backend NetworkPolicy should exist")
-	assert.Equal(t, BackstageNetworkPolicyName(bs.Name), backendNP.Name)
+	assert.Equal(t, NetworkPolicyName(bs.Name), backendNP.Name)
 	assert.Equal(t, "backstage-test-np", backendNP.Spec.PodSelector.MatchLabels[BackstageAppLabel])
 	assert.Contains(t, backendNP.Spec.PolicyTypes, networkingv1.PolicyTypeIngress)
 	assert.Contains(t, backendNP.Spec.PolicyTypes, networkingv1.PolicyTypeEgress)
 	assert.NotEmpty(t, backendNP.Spec.Ingress, "Backend should have ingress rules")
 	assert.NotEmpty(t, backendNP.Spec.Egress, "Backend should have egress rules")
 
-	// Backend should NOT have port 5432 egress when local DB is enabled
-	assert.False(t, hasEgressPort(backendNP, 5432), "Backend should not have port 5432 egress when local DB is enabled")
+	// Backend should have port 5432 egress to reach the local PostgreSQL database
+	assert.True(t, hasEgressPort(backendNP, 5432), "Backend should have port 5432 egress to reach PostgreSQL database")
 
 	// Verify DB policy
 	dbNP := nps.DbNetworkPolicy()

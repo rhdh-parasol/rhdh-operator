@@ -30,7 +30,7 @@ func init() {
 	registerConfig(NetworkPolicyKey, NetworkPolicyFactory{}, true, nil)
 }
 
-func BackstageNetworkPolicyName(backstageName string) string {
+func NetworkPolicyName(backstageName string) string {
 	return utils.GenerateRuntimeObjectName(backstageName, "backstage")
 }
 
@@ -70,19 +70,13 @@ func (b *NetworkPolicies) addToModel(model *BackstageModel, backstage api.Backst
 }
 
 // filterAndAdjust removes DB-specific policies when local DB is disabled,
-// and adds port 5432 egress to the backend policy to allow connections
-// to an external database.
+// and ensures port 5432 egress exists on the backend policy to allow
+// connections to the PostgreSQL database (local or external).
 func (b *NetworkPolicies) filterAndAdjust(localDbEnabled bool) {
 	if b.policies == nil {
 		return
 	}
 
-	if localDbEnabled {
-		// All policies apply as-is
-		return
-	}
-
-	// Filter out DB policies and adjust backend egress
 	var filtered []client.Object
 	for _, item := range b.policies.Items {
 		np, ok := item.(*networkingv1.NetworkPolicy)
@@ -91,13 +85,16 @@ func (b *NetworkPolicies) filterAndAdjust(localDbEnabled bool) {
 			continue
 		}
 
-		if isDbNetworkPolicy(np) {
+		if !localDbEnabled && isDbNetworkPolicy(np) {
 			// Skip DB policies when local DB is disabled
 			continue
 		}
 
-		// Add external DB egress (port 5432) to backend policy
-		addExternalDbEgress(np)
+		// Always add DB egress (port 5432) to backend policy so it can
+		// reach the PostgreSQL database whether local or external
+		if !isDbNetworkPolicy(np) && !hasEgressPort(np, 5432) {
+			addDbEgress(np)
+		}
 		filtered = append(filtered, item)
 	}
 
@@ -118,9 +115,9 @@ func isDbNetworkPolicy(np *networkingv1.NetworkPolicy) bool {
 	return false
 }
 
-// addExternalDbEgress appends a port 5432 TCP egress rule to the policy,
-// allowing the backend to reach external PostgreSQL databases.
-func addExternalDbEgress(np *networkingv1.NetworkPolicy) {
+// addDbEgress appends a port 5432 TCP egress rule to the policy,
+// allowing the backend to reach PostgreSQL databases (local or external).
+func addDbEgress(np *networkingv1.NetworkPolicy) {
 	np.Spec.Egress = append(np.Spec.Egress, networkingv1.NetworkPolicyEgressRule{
 		Ports: []networkingv1.NetworkPolicyPort{
 			{
@@ -150,7 +147,7 @@ func (b *NetworkPolicies) setMetaInfo(backstage api.Backstage, scheme *runtime.S
 			np.SetName(DbNetworkPolicyName(backstage.Name))
 			utils.GenerateLabel(&np.Spec.PodSelector.MatchLabels, BackstageAppLabel, utils.BackstageDbAppLabelValue(backstage.Name))
 		} else {
-			np.SetName(BackstageNetworkPolicyName(backstage.Name))
+			np.SetName(NetworkPolicyName(backstage.Name))
 			utils.GenerateLabel(&np.Spec.PodSelector.MatchLabels, BackstageAppLabel, utils.BackstageAppLabelValue(backstage.Name))
 		}
 

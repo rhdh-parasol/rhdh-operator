@@ -20,6 +20,8 @@ Depending on underlying infrastructure, external access to the Backstage server 
 K8s Ingress on top of Backstage Service.
 Note that in versions up to 0.0.2, only a Route configuration is supported by the Operator.
 
+The Operator also creates default-deny NetworkPolicies for both the Backstage backend and PostgreSQL pods, restricting ingress and egress to only the ports required for normal operation.
+
 Finally, the Backstage Operator supports all the [Backstage configuration](https://backstage.io/docs/conf/writing) options, which can be provided by creating dedicated 
 ConfigMaps and Secrets, then injecting them into the Backstage Pod as mounted volumes or environment variables (see [Configuration](configuration.md) guide for details).  
 

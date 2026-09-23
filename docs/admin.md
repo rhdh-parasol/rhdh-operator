@@ -165,7 +165,7 @@ This is by design: automatic deletion of resources could lead to unexpected data
 To identify resources created by the operator for a specific Backstage instance, look for resources with matching labels in the same namespace:
 
 ```bash
-oc get all,configmap,pvc,secret -l app.kubernetes.io/name=backstage,app.kubernetes.io/instance=<cr-name> -n <namespace>
+oc get all,configmap,pvc,secret,networkpolicy -l app.kubernetes.io/name=backstage,app.kubernetes.io/instance=<cr-name> -n <namespace>
 ```
 
 This command queries multiple resource types at once: `all` covers common resources (Pods, Services, Deployments, StatefulSets), while `configmap`, `pvc` and `secret` are added explicitly as they're not included in `all`.

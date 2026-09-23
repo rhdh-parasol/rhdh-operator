@@ -55,6 +55,7 @@ The Default Configuration defines the structure of all Backstage instances withi
 | secret-envs.yaml                         | []corev1.Secret                         | backstage-envs-<cr-name>            | No           | Yes   | >=0.2.x  | Backstage environment variables from Secret          |
 | [dynamic-plugins.yaml](#dynamic-plugins) | corev1.ConfigMap                        | backstage-dynamic-plugins-<cr-name> | No           | No    | >=0.2.x  | Dynamic plugins configuration                        |
 | pvcs.yaml                                | []corev1.PersistentVolumeClaim          | backstage-<cr-name>-<pvc-name>      | No           | Yes   | >=0.4.x  | List of PVC objects to be mounted to containers      |
+| networkpolicy.yaml                       | networkingv1.NetworkPolicy              | backstage-<cr-name> / backstage-psql-<cr-name> | No | Yes | >=0.10.x | Default-deny NetworkPolicies for backend and DB pods |
 
 **Meanings of "Mandatory" Column:**
 - **Yes** - Must be configured; deployment will fail otherwise.
@@ -222,6 +223,10 @@ For example, Backstage CR named **mybackstage** will create K8s Deployment resou
     - `spec.template.metadata.labels[rhdh.redhat.com/app] = backstage-psql-<cr-name>`
 * db-service.yaml
     - `spec.selector[rhdh.redhat.com/app] = backstage-psql-<cr-name>`
+* networkpolicy.yaml (backend)
+    - `spec.podSelector.matchLabels[rhdh.redhat.com/app] = backstage-<cr-name>`
+* networkpolicy.yaml (database)
+    - `spec.podSelector.matchLabels[rhdh.redhat.com/app] = backstage-psql-<cr-name>`
 
 ### Multi objects
 
@@ -234,6 +239,7 @@ The following configuration files support multi-object definitions:
 - **secret-files.yaml** 
 - **secret-envs.yaml** 
 - **pvcs.yaml** 
+- **networkpolicy.yaml** 
 
 For example, adding the following to **pvcs.yaml** will create 2 PVCs and mount them to the Backstage container:
 

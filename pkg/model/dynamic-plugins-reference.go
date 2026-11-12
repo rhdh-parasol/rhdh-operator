@@ -1,6 +1,7 @@
 package model
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -11,6 +12,11 @@ const ociPrefix = "oci://"
 const httpsPrefix = "https://"
 const httpPrefix = "http://"
 const localPrefix = "./"
+
+var (
+	errPluginReferenceNotFound = errors.New("plugin not found in default plugins")
+	errPluginReferenceNonOCI   = errors.New("only OCI references are supported")
+)
 
 // resolveReferences resolves all reference types in plugin package URLs.
 //
@@ -30,8 +36,10 @@ const localPrefix = "./"
 //   - http://...: HTTP URL to plugin archive
 //   - ./path: Local filesystem path
 //
-// Any other prefix returns an error.
-func resolveReferences(plugins []DynaPlugin, basePlugins []DynaPlugin) ([]DynaPlugin, error) {
+// When allowUnresolved is true, references without a matching inline OCI package
+// are left for the script to resolve from included files. Formats supported only
+// by the installation script are also left unchanged.
+func resolveReferences(plugins []DynaPlugin, basePlugins []DynaPlugin, allowUnresolved bool) ([]DynaPlugin, error) {
 	resolved := make([]DynaPlugin, len(plugins))
 	copy(resolved, plugins)
 
@@ -42,24 +50,32 @@ func resolveReferences(plugins []DynaPlugin, basePlugins []DynaPlugin) ([]DynaPl
 		}
 
 		var err error
+		var packageURL string
 
 		switch {
 		case strings.HasPrefix(plugin.Package, refPrefix):
 			// Catalog search by name
-			resolved[i].Package, err = resolveRefReference(plugin.Package, basePlugins)
+			packageURL, err = resolveRefReference(plugin.Package, basePlugins)
 		case strings.Contains(plugin.Package, inheritSuffix):
 			// Catalog search by name, inherit version/digest
-			resolved[i].Package, err = resolveInheritReference(plugin.Package, basePlugins)
+			packageURL, err = resolveInheritReference(plugin.Package, basePlugins)
 		case plugin.IsDirectLink():
 			// Direct link - no resolution needed
 			continue
 		default:
+			if allowUnresolved {
+				continue
+			}
 			return nil, fmt.Errorf("unsupported package URL format %q: must start with oci://, https://, http://, ./ or use ref:// for catalog lookup", plugin.Package)
 		}
 
 		if err != nil {
+			if allowUnresolved && (errors.Is(err, errPluginReferenceNotFound) || errors.Is(err, errPluginReferenceNonOCI)) {
+				continue
+			}
 			return nil, err
 		}
+		plugin.Package = packageURL
 	}
 
 	return resolved, nil
@@ -81,8 +97,9 @@ func (p *DynaPlugin) IsDirectLink() bool {
 //   - oci://x/plugin-foo:{{inherit}}!custom-path uses base's version but user's plugin-path
 func resolveInheritReference(packageURL string, basePlugins []DynaPlugin) (string, error) {
 	// Parse package to extract !plugin-path suffix if present
+	// Use first ! to split, in case selector itself contains !
 	var pluginPath string
-	if idx := strings.LastIndex(packageURL, "!"); idx != -1 {
+	if idx := strings.Index(packageURL, "!"); idx != -1 {
 		pluginPath = packageURL[idx:] // includes "!"
 		packageURL = packageURL[:idx]
 	}
@@ -103,12 +120,16 @@ func resolveInheritReference(packageURL string, basePlugins []DynaPlugin) (strin
 			continue
 		}
 		if plugin.Name() == pluginName {
+			if !strings.HasPrefix(plugin.Package, ociPrefix) {
+				return "", fmt.Errorf("cannot resolve {{inherit}} reference: plugin %q has non-OCI package URL %q: %w", pluginName, plugin.Package, errPluginReferenceNonOCI)
+			}
 			fullURL := plugin.Package
 
 			// If user specified !plugin-path, use it; otherwise use full default URL
 			if pluginPath != "" {
 				// Extract image part from default (without !plugin-path)
-				if idx := strings.LastIndex(fullURL, "!"); idx != -1 {
+				// Use first ! to strip, in case selector itself contains !
+				if idx := strings.Index(fullURL, "!"); idx != -1 {
 					fullURL = fullURL[:idx]
 				}
 				return fullURL + pluginPath, nil
@@ -118,7 +139,7 @@ func resolveInheritReference(packageURL string, basePlugins []DynaPlugin) (strin
 		}
 	}
 
-	return "", fmt.Errorf("cannot resolve {{inherit}} reference: no plugin named %q found in default plugins", pluginName)
+	return "", fmt.Errorf("cannot resolve {{inherit}} reference %q: %w", pluginName, errPluginReferenceNotFound)
 }
 
 // resolveRefReference resolves a ref:// reference by looking up plugin by name.
@@ -139,25 +160,33 @@ func resolveRefReference(packageURL string, basePlugins []DynaPlugin) (string, e
 			continue
 		}
 		if plugin.Name() == refName {
+			if !strings.HasPrefix(plugin.Package, ociPrefix) {
+				return "", fmt.Errorf("cannot resolve ref:// reference: plugin %q has non-OCI package URL %q: %w", refName, plugin.Package, errPluginReferenceNonOCI)
+			}
 			return plugin.Package, nil
 		}
 	}
 
-	return "", fmt.Errorf("cannot resolve ref:// reference: no plugin named %q found in default plugins", refName)
+	return "", fmt.Errorf("cannot resolve ref:// reference %q: %w", refName, errPluginReferenceNotFound)
 }
 
 // Name extracts the plugin name from the package URL.
-// For example:
+// For multi-plugin packages with !pluginPath, returns the pluginPath.
+// For single-plugin packages, extracts the name from the URL.
+//
+// Examples:
 //   - oci://quay.io/rhdh/backstage-plugin-techdocs@sha256:abc -> backstage-plugin-techdocs
 //   - oci://quay.io/rhdh/backstage-plugin-techdocs:1.0.0 -> backstage-plugin-techdocs
+//   - oci://quay.io/rhdh/multi-plugin:1.0!plugin-A -> plugin-A
 //   - https://example.com/path/backstage-plugin-foo-1.0.0.tgz -> backstage-plugin-foo
 //   - ./dynamic-plugins/dist/backstage-plugin-techdocs -> backstage-plugin-techdocs
 func (p *DynaPlugin) Name() string {
 	packageURL := p.Package
 
-	// Strip !plugin-path suffix if present
-	if idx := strings.LastIndex(packageURL, "!"); idx != -1 {
-		packageURL = packageURL[:idx]
+	// If !plugin-path present, return it as the plugin name
+	// Use first ! to split, in case selector itself contains !
+	if idx := strings.Index(packageURL, "!"); idx != -1 {
+		return packageURL[idx+1:]
 	}
 
 	// Handle OCI URLs

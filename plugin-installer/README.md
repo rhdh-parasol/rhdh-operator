@@ -1,74 +1,110 @@
 # RHDH Plugin Installer
 
-A bash script for downloading dynamic plugins from various sources (OCI registries, HTTP, NPM) with parallel execution support.
+Downloads dynamic plugins from various sources (OCI registries, HTTP, NPM) with integrity verification.
 
 ## Overview
 
-This script downloads and extracts dynamic plugins to a specified directory. It supports multiple package sources and handles authentication, integrity verification, and concurrent downloads.
+A Go-based tool (`plugin-fetch`) that downloads and extracts dynamic plugins to a specified directory. Supports multiple package sources, authentication, and integrity verification.
+
+Source code: `cmd/plugin-fetch/`, `pkg/fetcher/`
 
 ## Container Image
 
 ### Pre-built Image
 
 ```
-quay.io/rhdh-community/plugin-installer:next
+quay.io/rhdh-community/rhdh-plugin-installer:next
 ```
 
-The image is based on Red Hat UBI 9 Micro with skopeo for OCI registry downloads.
+The image is based on Red Hat UBI 9 Micro with the `plugin-fetch` binary.
 
 ### Building Images
 
-Two Dockerfile variants are provided:
+#### Standard Multi-platform Build
 
-| Dockerfile | OCI Tool | Description                                              |
-|------------|----------|----------------------------------------------------------|
-| `Dockerfile.skopeo` | skopeo | **Recommended.** Red Hat certified, FIPS compliant.      |
-| `Dockerfile.oras` | oras | Lighter experimental image, uses oras for OCI downloads. |
-
-Build using Make targets:
+Build and push multiplatform image using Docker buildx:
 
 ```bash
-# Build skopeo variant (default)
-make install-dp-build
+# Run tests
+make dp-installer-test
 
-# Push to registry
-make install-dp-push
+# Build and push multiplatform image
+make dp-installer-buildx
 
 # Or build with custom image name
-make install-dp-build INSTALL_DP_IMAGE=myregistry/my-plugin-installer:v1
-
-# Build oras variant manually
-docker build -f plugin-installer/Dockerfile.oras -t myregistry/plugin-installer:oras .
+make dp-installer-buildx RELATED_IMAGE_plugin_installer=myregistry/my-plugin-installer:v1
 ```
+
+#### Hermetic Build (Local Konflux Simulation)
+
+Test hermetic builds locally using Hermeto before pushing to Konflux:
+
+```bash
+# Prerequisites (macOS)
+brew install gnu-sed podman
+
+# Add GNU sed to PATH
+export PATH="/opt/homebrew/opt/gnu-sed/libexec/gnubin:$PATH"
+
+# Run hermetic build
+make dp-installer-hermetic-build
+
+# Clean cache if needed
+sudo rm -rf hermeto-cache
+```
+
+**What is a hermetic build?**
+
+A hermetic build is a network-isolated, reproducible build where all dependencies are prefetched before the build starts. This ensures:
+- **Reproducibility**: Same inputs always produce same outputs
+- **Security**: No network access during build prevents supply chain attacks
+- **Compliance**: Meets Red Hat security standards for production releases
+
+The hermetic build process:
+1. Prefetches dependencies (Go modules, RPMs) using Cachi2
+2. Builds container with `--network none` (no internet access)
+3. Uses only prefetched dependencies from local cache
+4. Validates the build works exactly as it will in Konflux
+
+**Relationship to Konflux:**
+
+The `make dp-installer-hermetic-build` target simulates how Konflux builds containers in production. Konflux automatically:
+- Triggers on commits to configured branches
+- Prefetches dependencies hermetically
+- Builds for multiple architectures (amd64, arm64)
+- Generates SBOM (Software Bill of Materials)
+- Runs security scans (Snyk, ClamAV, ACS)
+- Signs images with Sigstore
+- Publishes to `quay.io/rhdh/rhdh-plugin-installer-rhel10`
+
+Testing locally with hermetic builds helps catch issues before they appear in Konflux CI.
 
 ## Usage
 
 ```bash
-./install_plugins.sh [input_file] [output_dir] [parallel_jobs]
+plugin-fetch
 ```
 
-### Arguments
-
-| Argument | Default | Description |
-|----------|---------|-------------|
-| `input_file` | `/input/packages.txt` | File containing plugin URLs (one per line) |
-| `output_dir` | `/dynamic-plugins-root` | Directory to install plugins |
-| `parallel_jobs` | `4` | Number of parallel downloads |
+All configuration is via environment variables.
 
 ### Environment Variables
 
-| Variable | Description |
-|----------|-------------|
-| `INPUT_FILE` | Alternative to first argument |
-| `OUTPUT_DIR` | Alternative to second argument |
-| `PARALLEL_JOBS` | Alternative to third argument |
-| `OCI_TOOL` | Force OCI tool: `oras` or `skopeo` (auto-detected if not set) |
-| `NPM_REGISTRY` | NPM registry URL (default: `https://registry.npmjs.org`) |
-| `NPM_AUTH_TOKEN` | NPM authentication token |
-| `NPM_CONFIG_USERCONFIG` | Path to .npmrc file (default: `~/.npmrc`) |
-| `SKIP_INTEGRITY_CHECK` | Set to `true` to skip integrity verification |
-| `CATALOG_INDEX_IMAGE` | OCI image containing catalog-entities for Extensions UI |
-| `CATALOG_ENTITIES_EXTRACT_DIR` | Directory for extracted catalog entities (default: `/tmp/extensions`) |
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `INPUT_FILE` | `/input/packages.txt` | File containing plugin URLs (one per line) |
+| `OUTPUT_DIR` | `/dynamic-plugins-root` | Directory to install plugins |
+| `PARALLEL` | `4` | Number of parallel downloads |
+| `NPM_REGISTRY` | `https://registry.npmjs.org` | NPM registry URL |
+| `NPM_AUTH_TOKEN` | | NPM authentication token |
+| `NPM_CONFIG_USERCONFIG` | `~/.npmrc` | Path to .npmrc file |
+| `SKIP_INTEGRITY_CHECK` | `false` | Skip integrity verification |
+| `DOCKER_CONFIG` | | Path to docker config.json for OCI registry auth |
+| `CA_FILE` | | Path to CA certificate file for TLS |
+| `INSECURE` | `false` | Enable plain HTTP protocol for registries. WARNING: Exposes credentials in plain text. |
+| `SKIP_TLS_VERIFY` | `false` | Skip TLS certificate verification for HTTPS registries (connection remains encrypted) |
+| `PLUGIN_MODE` | `true` | Enable plugin mode: validate annotation and extract plugin subdirectory |
+| `CATALOG_INDEX_IMAGE` | | OCI image containing catalog-entities for Extensions UI |
+| `CATALOG_ENTITIES_EXTRACT_DIR` | `/tmp/extensions` | Directory for extracted catalog entities |
 
 ## Input File Format
 
@@ -90,8 +126,8 @@ https://example.com/plugin.tgz sha512-K3mCHKQ9sVh8o2F...
 # NPM scoped package with integrity (overrides registry)
 @backstage/plugin-techdocs@1.8.0 sha512-abc123...
 
-# NPM unscoped package
-is-odd@3.0.1
+# NPM unscoped package (requires @npm: prefix)
+@npm:is-odd@3.0.1
 ```
 
 ## Supported URL Formats
@@ -105,7 +141,7 @@ oci://ghcr.io/org/repo/plugin@sha256:abc123...
 oci://quay.io/namespace/plugin:tag
 ```
 
-**Tools:** Uses `skopeo` (preferred) or `oras` (fallback). At least one must be installed.
+**Auth:** Set `DOCKER_CONFIG` to path of docker config.json for private registries.
 
 ### HTTP/HTTPS
 
@@ -127,14 +163,15 @@ Downloads from NPM registry (or private registry via .npmrc).
 @backstage/plugin-catalog
 @backstage/plugin-catalog@1.10.0
 
-# Unscoped packages
-lodash
-is-odd@3.0.1
+# Unscoped packages (require @npm: prefix)
+@npm:lodash
+@npm:is-odd@3.0.1
 ```
 
 **Features:**
 - Reads registry URL and auth token from `.npmrc`
-- Supports scoped and unscoped packages
+- Supports scoped packages directly (`@scope/package`)
+- Supports unscoped packages with `@npm:` prefix
 - Resolves `latest` version if not specified
 - Verifies integrity (from registry or user-provided)
 
@@ -168,20 +205,20 @@ Environment variables can override:
 ```bash
 NPM_REGISTRY=https://npm.example.com \
 NPM_AUTH_TOKEN=secret_token \
-./install_plugins.sh packages.txt ./plugins
+plugin-fetch
 ```
 
 ## Catalog Index (Extensions UI)
 
-When `CATALOG_INDEX_IMAGE` is set, the script extracts catalog entities from the OCI image:
+When `CATALOG_INDEX_IMAGE` is set, catalog entities are extracted from the OCI image:
 
 ```bash
 CATALOG_INDEX_IMAGE=quay.io/rhdh/plugin-catalog-index:1.10 \
 CATALOG_ENTITIES_EXTRACT_DIR=/extensions \
-./install_plugins.sh packages.txt ./plugins
+plugin-fetch
 ```
 
-The script looks for `catalog-entities/extensions` in the image layers and copies them to `CATALOG_ENTITIES_EXTRACT_DIR/catalog-entities`.
+Looks for `catalog-entities/extensions` in the image layers and copies them to `CATALOG_ENTITIES_EXTRACT_DIR/catalog-entities`.
 
 ## Integrity Verification
 
@@ -196,12 +233,12 @@ Packages can be verified using SHA-256, SHA-384, or SHA-512 hashes.
 
 **Skip verification:**
 ```bash
-SKIP_INTEGRITY_CHECK=true ./install_plugins.sh
+SKIP_INTEGRITY_CHECK=true plugin-fetch
 ```
 
 ## Lock Management
 
-The script uses a lock file to prevent concurrent installations:
+A lock file prevents concurrent installations:
 
 - **Lock file:** `<output_dir>/install-dynamic-plugins.lock`
 - **Stale lock detection:** Automatically removes locks from dead processes
@@ -209,35 +246,8 @@ The script uses a lock file to prevent concurrent installations:
 
 ## Signal Handling
 
-- **SIGTERM:** Forwarded to child processes for graceful shutdown
+- **SIGTERM/SIGINT:** Triggers graceful shutdown, cancels in-flight downloads
 - **SIGKILL:** Cannot be trapped; stale lock is cleaned up on next run
-
-## OCI Tools
-
-### skopeo (preferred)
-
-```bash
-# Install on macOS
-brew install skopeo
-
-# Install on RHEL/Fedora
-dnf install skopeo
-```
-
-Red Hat certified, FIPS compliant. Uses `skopeo copy` to dir: transport.
-
-### oras (fallback)
-
-```bash
-# Install on macOS
-brew install oras
-
-# Install on Linux
-curl -LO https://github.com/oras-project/oras/releases/download/v1.1.0/oras_1.1.0_linux_amd64.tar.gz
-tar -xzf oras_1.1.0_linux_amd64.tar.gz -C /usr/local/bin oras
-```
-
-Uses `oras copy --to-oci-layout` for optimized single-operation downloads.
 
 ## Examples
 
@@ -245,19 +255,10 @@ Uses `oras copy --to-oci-layout` for optimized single-operation downloads.
 
 ```bash
 # Download plugins from packages.txt to ./plugins
-./install_plugins.sh packages.txt ./plugins
+INPUT_FILE=packages.txt OUTPUT_DIR=./plugins plugin-fetch
 
 # Use 8 parallel downloads
-./install_plugins.sh packages.txt ./plugins 8
-```
-
-### Environment Variables
-
-```bash
-INPUT_FILE=my-plugins.txt \
-OUTPUT_DIR=/opt/plugins \
-PARALLEL_JOBS=2 \
-./install_plugins.sh
+PARALLEL=8 plugin-fetch
 ```
 
 ### Private NPM Registry
@@ -265,43 +266,91 @@ PARALLEL_JOBS=2 \
 ```bash
 NPM_REGISTRY=https://npm.mycompany.com \
 NPM_AUTH_TOKEN=secret123 \
-./install_plugins.sh packages.txt ./plugins
+plugin-fetch
 ```
+
+### Private OCI Registry
+
+```bash
+DOCKER_CONFIG=/path/to/docker/config.json \
+plugin-fetch
+```
+
+### Private OCI Registry with Custom CA
+
+For registries using self-signed or private CA certificates:
+
+```bash
+DOCKER_CONFIG=/path/to/config.json \
+CA_FILE=/path/to/ca.crt \
+plugin-fetch
+```
+
+**docker config.json format:**
+```json
+{
+  "auths": {
+    "registry.example.com": {
+      "auth": "dXNlcm5hbWU6cGFzc3dvcmQ="
+    }
+  }
+}
+```
+
+The `auth` field is base64-encoded `username:password`.
+
+**Kubernetes deployment example:**
+
+Mount secrets and set env vars in the init container:
+```yaml
+env:
+  - name: DOCKER_CONFIG
+    value: /run/secrets/registry/config.json
+  - name: CA_FILE
+    value: /run/secrets/registry-ca/ca.crt
+volumeMounts:
+  - name: registry-auth
+    mountPath: /run/secrets/registry
+    readOnly: true
+  - name: registry-ca
+    mountPath: /run/secrets/registry-ca
+    readOnly: true
+```
+
+See [Backstage CR configuration](../docs/configuration.md) for how to configure this via the operator.
 
 ### Container Usage
 
 ```bash
 docker run -v $(pwd)/packages.txt:/input/packages.txt \
            -v $(pwd)/plugins:/dynamic-plugins-root \
-           quay.io/rhdh-community/plugin-installer:next
+           quay.io/rhdh-community/rhdh-plugin-installer:next
 ```
 
 ## Testing
 
-A test suite is provided in `install_plugins_test.sh`.
+Tests are provided in Go for the fetcher package and plugin-fetch command.
 
-### Run Unit Tests
-
-```bash
-./plugin-installer/install_plugins_test.sh
-```
-
-### Run with Integration Tests
-
-Integration tests require network access to download real packages.
+### Run Tests
 
 ```bash
-RUN_INTEGRATION_TESTS=true ./plugin-installer/install_plugins_test.sh
+make dp-installer-test
 ```
+
+This runs:
+- `pkg/fetcher/` unit tests (NPM parsing, OCI options, extraction, integrity)
+- `cmd/plugin-fetch/` integration tests (real NPM/OCI downloads)
 
 ### Test Coverage
 
-| Category | Tests |
-|----------|-------|
-| `parse_npmrc()` | 7 tests - .npmrc parsing, registry, auth token |
-| `url_encode()` | 3 tests - scoped package URL encoding |
-| `verify_integrity()` | 6 tests - SHA verification, skip conditions |
-| Integration | 1 test - real npm package download |
+| Package | Tests |
+|---------|-------|
+| `pkg/fetcher/npm_test.go` | NPM package parsing, .npmrc parsing, integrity verification |
+| `pkg/fetcher/oci_test.go` | OCI options, docker config, keychain resolution |
+| `pkg/fetcher/http_test.go` | HTTP fetcher, tarball detection |
+| `pkg/fetcher/local_test.go` | Local file/directory copying, file: protocol |
+| `pkg/fetcher/extract_test.go` | Tar extraction, path traversal protection, size limits |
+| `cmd/plugin-fetch/integration_test.go` | Real NPM/OCI downloads, routing |
 
 ## Exit Codes
 
@@ -311,13 +360,6 @@ RUN_INTEGRATION_TESTS=true ./plugin-installer/install_plugins_test.sh
 | 1 | Error (missing input file, download failure, etc.) |
 
 ## Troubleshooting
-
-### "Neither oras nor skopeo found"
-
-Install at least one OCI tool:
-```bash
-brew install oras  # or skopeo
-```
 
 ### "failed to fetch package metadata"
 
@@ -330,9 +372,24 @@ curl -sL https://registry.npmjs.org/is-odd | head -100
 
 The downloaded file doesn't match the expected hash. Verify the integrity string is correct or set `SKIP_INTEGRITY_CHECK=true`.
 
+### "x509: certificate signed by unknown authority"
+
+For private OCI registries with self-signed certificates:
+- **Recommended**: Set `CA_FILE` to the CA certificate path
+- **Alternative**: Set `SKIP_TLS_VERIFY=true` to skip certificate verification (not recommended for production)
+  - Connection remains encrypted (HTTPS)
+  - Only certificate validation is skipped
+
+### Plain HTTP Registry Support
+
+For registries that only support plain HTTP (not HTTPS):
+- Set `INSECURE=true` to enable plain HTTP protocol
+- **WARNING**: Credentials are transmitted in plain text
+- Only use for trusted internal networks or development environments
+
 ### Lock file issues
 
-If the script was killed (SIGKILL), a stale lock may remain. The script auto-detects and removes stale locks, but you can manually remove:
+If the process was killed (SIGKILL), a stale lock may remain. Stale locks are auto-detected and removed, but you can manually remove:
 ```bash
 rm -f /dynamic-plugins-root/install-dynamic-plugins.lock
 ```

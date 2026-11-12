@@ -171,7 +171,7 @@ spec:
       default: "true"
   steps:
     - name: flatten
-      image: registry.access.redhat.com/ubi9-minimal
+      image: registry.access.redhat.com/ubi10-minimal
       workingDir: $(workspaces.workflow-source.path)
       script: |
         #!/usr/bin/env sh
@@ -210,14 +210,15 @@ spec:
       type: string
   steps:
     - name: build-manifests
-      image: registry.access.redhat.com/ubi9-minimal
+      image: registry.access.redhat.com/ubi10-minimal
       workingDir: $(workspaces.workflow-source.path)/flat/$(params.workflowId)
       script: |
         #!/usr/bin/env sh
         set -eu
 
         microdnf install -y tar gzip
-        KN_CLI_URL="https://developers.redhat.com/content-gateway/file/pub/cgw/serverless-logic/1.38.0/kn-workflow-linux-amd64.tar.gz"
+        # Purposely pinned to 1.39.0. OSL Operator needed to be bumped to 1.39.2 during the OSL 1.39 rebuilds (https://redhat.atlassian.net/browse/SRVLOGIC-1303), but the other images/tools were only rebuilt.
+        KN_CLI_URL="https://developers.redhat.com/content-gateway/file/pub/cgw/serverless-logic/1.39.0/kn-workflow-linux-amd64.tar.gz"
         curl -L "$KN_CLI_URL" | tar -xz --no-same-owner && chmod +x kn-workflow-linux-amd64 && mv kn-workflow-linux-amd64 kn-workflow
         ./kn-workflow gen-manifest --namespace ""
 ---
@@ -238,7 +239,7 @@ spec:
       type: string
   steps:
     - name: build-gitops
-      image: registry.access.redhat.com/ubi9-minimal
+      image: registry.access.redhat.com/ubi10-minimal
       workingDir: $(workspaces.workflow-gitops.path)/workflow-gitops
       script: |
         #!/usr/bin/env sh

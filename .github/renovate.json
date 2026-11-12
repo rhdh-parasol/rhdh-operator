@@ -5,14 +5,16 @@
     ":rebaseStalePrs",
     "docker:disableMajor",
     "default:pinDigestsDisabled",
-    "helpers:pinGitHubActionDigests"
+    "helpers:pinGitHubActionDigests",
+    "security:gomodIndirectSecurityUpdates"
   ],
   "labels": [
     "kind/dependency upgrade"
   ],
   "baseBranchPatterns": [
     "main",
-    "/^release-\\d+\\..*/"
+    "/^release-1\\.(9|\\d{2,}).*/",
+    "/^release-([2-9]|\\d{2,})\\..*/"
   ],
   "constraints": {
     "go": "1.26"
@@ -24,42 +26,6 @@
     "gomodTidy"
   ],
   "packageRules": [
-    {
-      "matchBaseBranches": [
-        "release-1.8"
-      ],
-      "enabled": false
-    },
-    {
-      "matchBaseBranches": [
-        "release-1.7"
-      ],
-      "enabled": false
-    },
-    {
-      "matchBaseBranches": [
-        "release-1.6"
-      ],
-      "enabled": false
-    },
-    {
-      "matchBaseBranches": [
-        "release-1.5"
-      ],
-      "enabled": false
-    },
-    {
-      "matchBaseBranches": [
-        "release-1.4"
-      ],
-      "enabled": false
-    },
-    {
-      "matchBaseBranches": [
-        "release-1.3"
-      ],
-      "enabled": false
-    },
     {
       "enabled": false,
       "groupName": "all minor dependencies",
@@ -105,7 +71,8 @@
       ],
       "matchBaseBranches": [
         "main",
-        "/^release-\\d+\\..*/"
+        "/^release-1\\.(9|\\d{2,}).*/",
+        "/^release-([2-9]|\\d{2,})\\..*/"
       ],
       "automerge": false
     },
@@ -169,6 +136,13 @@
       ],
       "matchCurrentVersion": "!/^0/",
       "automerge": true
+    },
+    {
+      "description": "Disable routine updates for indirect Go deps; vulnerability alerts handle CVE-only updates separately",
+      "matchManagers": ["gomod"],
+      "matchDepTypes": ["indirect"],
+      "matchUpdateTypes": ["major", "minor", "patch", "pin", "pinDigest", "digest", "lockFileMaintenance", "rollback", "replacement", "bump"],
+      "enabled": false
     }
   ],
   "vulnerabilityAlerts": {
@@ -177,5 +151,16 @@
       "kind/security"
     ]
   },
-  "osvVulnerabilityAlerts": true
+  "osvVulnerabilityAlerts": true,
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/^Makefile$/"],
+      "matchStrings": [
+        "# renovate: datasource=docker depName=(?<depName>\\S+)\\nHERMETO_IMAGE \\?= \\S+:(?<currentValue>\\S+)"
+      ],
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "docker"
+    }
+  ]
 }

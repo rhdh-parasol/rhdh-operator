@@ -48,6 +48,15 @@ func installRhdhOperatorManifest(operatorManifest string) {
 
 	cmd := exec.Command(helper.GetPlatformTool(), "apply", "-f", p)
 	_, err := helper.Run(cmd)
+	if err != nil {
+		GinkgoWriter.Printf("Initial manifest apply failed; waiting for CRDs before retrying: %v\n", err)
+		cmd = exec.Command(helper.GetPlatformTool(), "wait", "--for=condition=Established", "crd", "--all", "--timeout=2m")
+		_, waitErr := helper.Run(cmd)
+		Expect(waitErr).ShouldNot(HaveOccurred())
+
+		cmd = exec.Command(helper.GetPlatformTool(), "apply", "-f", p)
+		_, err = helper.Run(cmd)
+	}
 	Expect(err).ShouldNot(HaveOccurred())
 }
 
@@ -86,6 +95,10 @@ func installRhdhOperatorAirgapped() (podLabel string) {
 	_, err := helper.Run(cmd)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred())
 
+	// Derive the OLM channel from the operator version (e.g., v1.1.0 -> fast-1.1)
+	verParts := strings.SplitN(strings.TrimPrefix(operatorVersion, "v"), ".", 3)
+	olmChannel := fmt.Sprintf("fast-%s.%s", verParts[0], verParts[1])
+
 	// Create a subscription in the rhdh-operator namespace
 	helper.CreateNamespace(_namespace)
 	cmd = exec.Command(helper.GetPlatformTool(), "-n", _namespace, "apply", "-f", "-")
@@ -105,12 +118,12 @@ metadata:
   name: rhdh
   namespace: %s
 spec:
-  channel: fast
+  channel: %s
   installPlanApproval: Automatic
   name: rhdh
   source: rhdh-disconnected-install
   sourceNamespace: openshift-marketplace
-`, _namespace))
+`, _namespace, olmChannel))
 	}()
 	_, err = helper.Run(cmd)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred())
@@ -211,7 +224,11 @@ var _ = SynchronizedAfterSuite(func() {
 },
 	// the function below *only* on process #1
 	func() {
-		defer uninstallOperator()
+		defer func() {
+			uninstallOperator()
+			deleteOperatorManifest(os.Getenv("FROM_OPERATOR_MANIFEST"))
+			deleteOperatorManifest(os.Getenv("TO_OPERATOR_MANIFEST"))
+		}()
 		fmt.Println(fetchOperatorLogs(managerPodLabel, false)())
 	},
 )
@@ -324,15 +341,35 @@ func uninstallOperator() {
 	}
 }
 
+func deleteOperatorManifest(operatorManifest string) {
+	if operatorManifest == "" {
+		return
+	}
+	cmd := exec.Command(helper.GetPlatformTool(), "delete", "-f", operatorManifest, "--ignore-not-found=true")
+	_, _ = helper.Run(cmd)
+}
+
 func uninstallRhdhOperator(withAirgap bool) {
 	cmd := exec.Command(
 		helper.GetPlatformTool(), "delete", "subscription", "rhdh", "-n", _namespace, "--ignore-not-found=true")
 	_, err := helper.Run(cmd)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred())
 
-	cs := "rhdh-fast"
+	var cs string
 	if withAirgap {
 		cs = "rhdh-disconnected-install"
+	} else {
+		olmChannel := os.Getenv("OLM_CHANNEL")
+		if olmChannel == "" {
+			xVer := os.Getenv("CI_X_VERSION")
+			yVer := os.Getenv("CI_Y_VERSION")
+			if xVer != "" && yVer != "" {
+				olmChannel = fmt.Sprintf("fast-%s.%s", xVer, yVer)
+			} else {
+				olmChannel = "fast"
+			}
+		}
+		cs = "rhdh-" + olmChannel
 	}
 	cmd = exec.Command(
 		helper.GetPlatformTool(), "delete", "catalogsource", cs,

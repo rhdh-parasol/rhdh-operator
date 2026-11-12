@@ -3,10 +3,16 @@ package integration_tests
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
+	"github.com/redhat-developer/rhdh-operator/api/v1alpha5"
 	"github.com/redhat-developer/rhdh-operator/pkg/utils"
 	appsv1 "k8s.io/api/apps/v1"
+	networkingv1 "k8s.io/api/networking/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	"k8s.io/utils/ptr"
+	"sigs.k8s.io/yaml"
 
 	"github.com/redhat-developer/rhdh-operator/pkg/model"
 
@@ -53,9 +59,9 @@ var _ = When("create default rhdh", func() {
 			err = k8sClient.Get(ctx, types.NamespacedName{Namespace: ns, Name: defAppConfigName}, &appConfigCm)
 			g.Expect(err).ShouldNot(HaveOccurred())
 
-			// no lightspeed
+			// no intelligent-assistant
 			//g.Expect(deploy.PodSpec().InitContainers).To(HaveLen(1))
-			// with lightspeed
+			// with intelligent-assistant
 			//g.Expect(deploy.PodSpec().InitContainers).To(HaveLen(2))
 
 			if !model.IsOperatorDPProcessing() {
@@ -118,11 +124,11 @@ var _ = When("create default rhdh", func() {
 				g.Expect(initCont.Env[0].Value).To(Equal("/opt/app-root/src/.npmrc.dynamic-plugins/.npmrc"))
 			}
 
-			// no default lightspeed
+			// no default intelligent-assistant
 			//g.Expect(deploy.PodSpec().Volumes).To(HaveLen(8))
 			//g.Expect(deploy.PodSpec().Containers).To(HaveLen(1))
 
-			// including default lightspeed flavour
+			// including default intelligent-assistant flavour
 			// TODO restore it
 			//g.Expect(deploy.PodSpec().Volumes).To(HaveLen(13))
 			//g.Expect(deploy.PodSpec().Containers).To(HaveLen(7))
@@ -206,6 +212,20 @@ var _ = When("create default rhdh", func() {
 				})
 			}
 
+			By("creating NetworkPolicies for the backend")
+			npList := &networkingv1.NetworkPolicyList{}
+			err = k8sClient.List(ctx, npList, client.InNamespace(ns),
+				client.MatchingLabels{model.BackstageAppLabel: utils.BackstageAppLabelValue(backstageName)})
+			g.Expect(err).ShouldNot(HaveOccurred())
+			g.Expect(len(npList.Items)).To(BeNumerically(">=", 6))
+
+			By("creating NetworkPolicies for the local database")
+			dbNpList := &networkingv1.NetworkPolicyList{}
+			err = k8sClient.List(ctx, dbNpList, client.InNamespace(ns),
+				client.MatchingLabels{model.BackstageAppLabel: utils.BackstageDbAppLabelValue(backstageName)})
+			g.Expect(err).ShouldNot(HaveOccurred())
+			g.Expect(len(dbNpList.Items)).To(BeNumerically(">=", 3))
+
 		}, 20*time.Second, time.Second).Should(Succeed())
 
 		deleteNamespace(ctx, ns)
@@ -249,6 +269,7 @@ var _ = When("create default rhdh", func() {
 
 		}, 10*time.Second, time.Second).Should(Succeed())
 
+		deleteNamespace(ctx, ns)
 	})
 
 	It("replaces .npmrc", func() {
@@ -291,7 +312,8 @@ var _ = When("create default rhdh", func() {
 			deploy, err := backstageDeployment(ctx, k8sClient, ns, backstageName)
 			g.Expect(err).To(Not(HaveOccurred()))
 
-			// FIXME: restore to Equal(2) when lightspeed is re-enabled (RHIDP-15458)
+			// The intelligent-assistant flavour no longer adds an init container
+			// (RAG init container was replaced with OKP deployment)
 			g.Expect(len(deploy.PodSpec().InitContainers)).To(Equal(1))
 
 			initCont := deploy.PodSpec().InitContainers[0]
@@ -307,12 +329,10 @@ var _ = When("create default rhdh", func() {
 
 		}, 10*time.Second, time.Second).Should(Succeed())
 
+		deleteNamespace(ctx, ns)
 	})
 
-	It("creates rhdh with default Lightspeed flavour", func() {
-
-		// FIXME: re-enable when lightspeed is re-enabled (RHIDP-15458)
-		Skip("Temporarily skipped: lightspeed disabled by default due to DPDY issues")
+	It("creates rhdh with default Intelligent Assistant flavour", func() {
 
 		if !isProfile("rhdh") {
 			Skip("Skipped for non rhdh config")
@@ -320,25 +340,26 @@ var _ = When("create default rhdh", func() {
 
 		ctx := context.Background()
 		ns := createNamespace(ctx)
-		backstageName := createAndReconcileBackstage(ctx, ns, api.BackstageSpec{
-			//Flavours: &[]api.Flavour{
-			//	{Name: "lightspeed", Enabled: true},
-			//},
-		}, "")
+		backstageName := createAndReconcileBackstage(ctx, ns, api.BackstageSpec{}, "")
 
 		Eventually(func(g Gomega) {
 			cmList := &corev1.ConfigMapList{}
 			err := k8sClient.List(ctx, cmList, client.InNamespace(ns))
 			g.Expect(err).ShouldNot(HaveOccurred())
 
-			// check if contains ConfigMaps with "flavour-lightspeed" source
+			// check if contains ConfigMaps with "flavour-intelligent-assistant" source
 			foundSource := false
+			foundOkpConfig := false
 			for _, cm := range cmList.Items {
-				if cm.Annotations[model.SourceAnnotation] == "flavour-lightspeed" {
+				if cm.Annotations[model.SourceAnnotation] == "flavour-intelligent-assistant" {
 					foundSource = true
+				}
+				if strings.Contains(cm.Data["lightspeed-stack.yaml"], "\nrag:\n  okp:") {
+					foundOkpConfig = true
 				}
 			}
 			g.Expect(foundSource).To(BeTrue())
+			g.Expect(foundOkpConfig).To(BeFalse())
 
 			deploy, err := backstageDeployment(ctx, k8sClient, ns, backstageName)
 			g.Expect(err).To(Not(HaveOccurred()))
@@ -347,18 +368,161 @@ var _ = When("create default rhdh", func() {
 			for _, c := range deploy.PodSpec().Containers {
 				if c.Name == "lightspeed-core" {
 					foundLightspeedCore = true
+					g.Expect(c.Args).To(Equal([]string{
+						"--synthesized-config-output",
+						"/tmp/.generated/run.yaml",
+					}))
+					for _, env := range c.Env {
+						g.Expect(env.Name).NotTo(Equal("OKP_SERVICE_URL"))
+					}
 				}
 			}
 			g.Expect(foundLightspeedCore).To(BeTrue())
 
-			foundInitRagData := false
-			for _, c := range deploy.PodSpec().InitContainers {
-				if c.Name == "init-rag-data" {
-					foundInitRagData = true
+			okpDeploy := &appsv1.Deployment{}
+			err = k8sClient.Get(ctx, types.NamespacedName{
+				Namespace: ns,
+				Name:      "ia-okp-" + backstageName,
+			}, okpDeploy)
+			g.Expect(client.IgnoreNotFound(err)).ShouldNot(HaveOccurred())
+			g.Expect(err).To(HaveOccurred())
+
+		}, 20*time.Second, time.Second).Should(Succeed())
+
+		deleteNamespace(ctx, ns)
+	})
+
+	It("creates default Intelligent Assistant with the explicitly enabled OKP add-on flavour", func() {
+
+		if !isProfile("rhdh") {
+			Skip("Skipped for non rhdh config")
+		}
+
+		ctx := context.Background()
+		ns := createNamespace(ctx)
+		backstageName := createAndReconcileBackstage(ctx, ns, api.BackstageSpec{
+			Flavours: &[]api.Flavour{
+				{Name: "intelligent-assistant-okp", Enabled: true},
+			},
+		}, "")
+
+		Eventually(func(g Gomega) {
+			cmList := &corev1.ConfigMapList{}
+			err := k8sClient.List(ctx, cmList, client.InNamespace(ns))
+			g.Expect(err).ShouldNot(HaveOccurred())
+
+			foundIaConfig := false
+			foundOkpConfig := false
+			for _, cm := range cmList.Items {
+				if cm.Annotations[model.SourceAnnotation] == "flavour-intelligent-assistant" {
+					foundIaConfig = true
+				}
+				if strings.Contains(cm.Data["lightspeed-stack.yaml"], "\nrag:\n  okp:") {
+					foundOkpConfig = true
 				}
 			}
-			g.Expect(foundInitRagData).To(BeTrue())
+			g.Expect(foundIaConfig).To(BeTrue())
+			g.Expect(foundOkpConfig).To(BeTrue())
 
+			okpDeploy := &appsv1.Deployment{}
+			err = k8sClient.Get(ctx, types.NamespacedName{
+				Namespace: ns,
+				Name:      "ia-okp-" + backstageName,
+			}, okpDeploy)
+			g.Expect(err).ShouldNot(HaveOccurred())
+
+			okpService := &corev1.Service{}
+			err = k8sClient.Get(ctx, types.NamespacedName{
+				Namespace: ns,
+				Name:      "ia-okp-" + backstageName,
+			}, okpService)
+			g.Expect(err).ShouldNot(HaveOccurred())
+
+			npList := &networkingv1.NetworkPolicyList{}
+			err = k8sClient.List(ctx, npList, client.InNamespace(ns))
+			g.Expect(err).ShouldNot(HaveOccurred())
+			foundOkpNetworkPolicy := false
+			for _, np := range npList.Items {
+				if np.Annotations[model.ConfiguredNameAnnotation] == "allow-okp-egress" {
+					foundOkpNetworkPolicy = true
+				}
+			}
+			g.Expect(foundOkpNetworkPolicy).To(BeTrue())
+
+			deploy, err := backstageDeployment(ctx, k8sClient, ns, backstageName)
+			g.Expect(err).ShouldNot(HaveOccurred())
+			stackVolumeName := ""
+			for _, c := range deploy.PodSpec().Containers {
+				if c.Name == "lightspeed-core" {
+					g.Expect(c.Args).To(Equal([]string{
+						"--synthesized-config-output",
+						"/tmp/.generated/run.yaml",
+					}))
+					for _, mount := range c.VolumeMounts {
+						g.Expect(mount.MountPath).NotTo(Equal("/app-root/lightspeed-stack-okp.yaml"))
+						if mount.MountPath == "/app-root/lightspeed-stack.yaml" {
+							stackVolumeName = mount.Name
+							g.Expect(mount.SubPath).To(Equal("lightspeed-stack.yaml"))
+						}
+					}
+					for _, env := range c.Env {
+						g.Expect(env.Name).NotTo(Equal("OKP_SERVICE_URL"))
+					}
+				}
+			}
+			g.Expect(stackVolumeName).NotTo(BeEmpty())
+			foundOkpStackVolume := false
+			for _, volume := range deploy.PodSpec().Volumes {
+				if volume.Name == stackVolumeName {
+					g.Expect(volume.ConfigMap).NotTo(BeNil())
+					g.Expect(volume.ConfigMap.Name).To(ContainSubstring("lightspeed-stack-okp-config"))
+					foundOkpStackVolume = true
+				}
+			}
+			g.Expect(foundOkpStackVolume).To(BeTrue())
+
+		}, 20*time.Second, time.Second).Should(Succeed())
+
+		deleteNamespace(ctx, ns)
+	})
+
+	It("applies the OKP add-on after Intelligent Assistant regardless of flavour declaration order", func() {
+
+		if !isProfile("rhdh") {
+			Skip("Skipped for non rhdh config")
+		}
+
+		ctx := context.Background()
+		ns := createNamespace(ctx)
+		backstageName := createAndReconcileBackstage(ctx, ns, api.BackstageSpec{
+			Flavours: &[]api.Flavour{
+				{Name: "intelligent-assistant-okp", Enabled: true},
+				{Name: "intelligent-assistant", Enabled: true},
+			},
+		}, "")
+
+		Eventually(func(g Gomega) {
+			okpDeploy := &appsv1.Deployment{}
+			err := k8sClient.Get(ctx, types.NamespacedName{
+				Namespace: ns,
+				Name:      "ia-okp-" + backstageName,
+			}, okpDeploy)
+			g.Expect(err).ShouldNot(HaveOccurred())
+
+			deploy, err := backstageDeployment(ctx, k8sClient, ns, backstageName)
+			g.Expect(err).ShouldNot(HaveOccurred())
+
+			foundLightspeedCore := false
+			for _, container := range deploy.PodSpec().Containers {
+				if container.Name == "lightspeed-core" {
+					foundLightspeedCore = true
+					g.Expect(container.Args).To(Equal([]string{
+						"--synthesized-config-output",
+						"/tmp/.generated/run.yaml",
+					}))
+				}
+			}
+			g.Expect(foundLightspeedCore).To(BeTrue())
 		}, 20*time.Second, time.Second).Should(Succeed())
 
 		deleteNamespace(ctx, ns)
@@ -381,10 +545,10 @@ var _ = When("create default rhdh", func() {
 			err := k8sClient.List(ctx, cmList, client.InNamespace(ns))
 			g.Expect(err).ShouldNot(HaveOccurred())
 
-			// check if contains ConfigMaps with "flavour-lightspeed" source
+			// check if contains ConfigMaps with "flavour-intelligent-assistant" source
 			foundSource := false
 			for _, cm := range cmList.Items {
-				if cm.Annotations[model.SourceAnnotation] == "flavour-lightspeed" {
+				if cm.Annotations[model.SourceAnnotation] == "flavour-intelligent-assistant" {
 					foundSource = true
 				}
 			}
@@ -413,4 +577,97 @@ var _ = When("create default rhdh", func() {
 
 		deleteNamespace(ctx, ns)
 	})
+
+	It("creates Backstage with inline dynamic plugins", func() {
+		if !isProfile("rhdh") {
+			Skip("Skipped for non rhdh config")
+		}
+
+		ctx := context.Background()
+		ns := createNamespace(ctx)
+
+		pluginConfigJSON, _ := yaml.YAMLToJSON([]byte(`
+app:
+  analytics:
+    segment:
+      writeKey: ${TEST_SEGMENT_KEY}
+`))
+
+		bs := api.BackstageSpec{
+			Application: &api.Application{
+				DynamicPlugins: []v1alpha5.DynamicPluginConfig{
+					{
+						Package: "ref://backstage-community-plugin-analytics-provider-segment",
+						Enabled: ptr.To(true),
+						PluginConfig: &apiextensionsv1.JSON{
+							Raw: pluginConfigJSON,
+						},
+					},
+					{
+						Package: "ref://backstage-plugin-kubernetes",
+						Enabled: ptr.To(false),
+					},
+				},
+			},
+		}
+
+		backstageName := createAndReconcileBackstage(ctx, ns, bs, "")
+
+		Eventually(func(g Gomega) {
+			By("verifying ConfigMap was generated")
+			cm := &corev1.ConfigMap{}
+			cmName := model.DynamicPluginsDefaultName(backstageName)
+			err := k8sClient.Get(ctx, types.NamespacedName{Namespace: ns, Name: cmName}, cm)
+			g.Expect(err).ShouldNot(HaveOccurred())
+
+			By("verifying ConfigMap contains our inline plugins")
+			if model.IsOperatorDPProcessing() {
+				// When OPERATOR_DP_PROCESSING=true, ConfigMap contains packages.txt with enabled plugins only
+				packagesData, ok := cm.Data["packages.txt"]
+				g.Expect(ok).To(BeTrue())
+				g.Expect(packagesData).NotTo(BeEmpty())
+				g.Expect(packagesData).To(ContainSubstring("backstage-community-plugin-analytics-provider-segment"))
+				// Only enabled plugins in packages.txt, so kubernetes frontend plugin (enabled: false) should NOT be present
+				g.Expect(packagesData).NotTo(ContainSubstring("backstage-plugin-kubernetes@"))
+			} else {
+				// When OPERATOR_DP_PROCESSING=false, ConfigMap contains full dynamic-plugins.yaml
+				configData, ok := cm.Data[model.DynamicPluginsFile]
+				g.Expect(ok).To(BeTrue())
+				g.Expect(configData).NotTo(BeEmpty())
+				g.Expect(configData).To(ContainSubstring("backstage-community-plugin-analytics-provider-segment"))
+				g.Expect(configData).To(ContainSubstring("backstage-plugin-kubernetes"))
+				g.Expect(configData).To(ContainSubstring("TEST_SEGMENT_KEY"))
+			}
+
+			By("verifying deployment has correct volume mount")
+			deploy, err := backstageDeployment(ctx, k8sClient, ns, backstageName)
+			g.Expect(err).ShouldNot(HaveOccurred())
+
+			podSpec := deploy.PodSpec()
+			g.Expect(utils.GenerateVolumeNameFromCmOrSecret(cmName)).To(BeAddedAsVolumeToPodSpec(*podSpec))
+
+			// Verify init container has the volume mount
+			var initContainer *corev1.Container
+			for i := range podSpec.InitContainers {
+				if podSpec.InitContainers[i].Name == "install-dynamic-plugins" {
+					initContainer = &podSpec.InitContainers[i]
+					break
+				}
+			}
+			g.Expect(initContainer).NotTo(BeNil())
+
+			foundMount := false
+			for _, vm := range initContainer.VolumeMounts {
+				if vm.Name == utils.GenerateVolumeNameFromCmOrSecret(cmName) {
+					foundMount = true
+					break
+				}
+			}
+			g.Expect(foundMount).To(BeTrue(), "init container should have volume mount for generated ConfigMap")
+
+		}, time.Minute, time.Second).Should(Succeed(), controllerMessage())
+
+		deleteNamespace(ctx, ns)
+	})
+
 })

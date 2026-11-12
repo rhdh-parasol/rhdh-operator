@@ -94,6 +94,8 @@ make [PROFILE=<configuration-profile>] [install] run
 
 You can use it for manual and automated ([such as](../integration_tests/README.md) `USE_EXISTING_CLUSTER=true make integration-test`) tests efficiently, but, note, RBAC is not working with this kind of deployment.
 
+**Note:** The DevHubPluginCatalog controller is disabled by default for local development (`DISABLE_CATALOG_CONTROLLER=true`) to avoid conflicts with an already deployed operator's catalog ConfigMap.
+
 ### Deploy operator to the real cluster
 
 #### Configuration Profiles
@@ -122,8 +124,15 @@ make undeploy
 
 In a case if Profile contain plugin infrastructure manifests `/config/profile/<profile>/plugin-infra` it can be deployed by:
 ```sh
-make plugin-infra [PROFILE=<configuration-profile>]
+make plugin-infra [PROFILE=<configuration-profile>] [OLM_VERSION=auto|v0|v1]
 ```
+
+To remove plugin infrastructure installed by the same script:
+```sh
+make plugin-infra-undeploy [PROFILE=<configuration-profile>] [OLM_VERSION=auto|v0|v1]
+```
+
+`OLM_VERSION` is forwarded to `plugin-infra.sh` as `--olm-version`. See [orchestrator guide](orchestrator.md#rhdh-helper-script) for details on OLM v0 vs v1 manifest selection.
 
 **UnDeploy the controller from the cluster:**
 
@@ -169,6 +178,40 @@ You can do it all together using:
 ```sh
 [IMAGE_TAG_BASE=<your-registry>/backstage-operator] make release-build release-push
 ```
+
+#### Hermetic builds
+
+The operator image can be built hermetically (offline/reproducible) using [Hermeto](https://github.com/konflux-ci/hermeto), matching how downstream Konflux builds work. This pre-fetches all Go modules and RPM dependencies, then builds with `--network none` to ensure nothing is downloaded during the build.
+
+The Hermeto image is pinned once in the Makefile (`HERMETO_IMAGE`); CI and local hermetic builds read that same value.
+
+Local dependency caches live under `/tmp/hermeto-cache/` (e.g. `operator` for the manager image, same path as CI; not stored in the git tree). After prefetch, the script chowns the cache and runs `chmod -R a+rwX`, matching [rhdh-must-gather](https://github.com/redhat-developer/rhdh-must-gather) and CI.
+
+Requirements: `podman` must be installed.
+
+```sh
+# Build cache and image in one step
+./hack/local-hermeto-build.sh -d . -i <your-registry>/backstage-operator:tag
+
+# Build only the dependency cache (no image)
+./hack/local-hermeto-build.sh -d . --no-image
+
+# Build image using existing cache (skip re-fetching dependencies)
+./hack/local-hermeto-build.sh -d . -i <your-registry>/backstage-operator:tag --no-cache
+
+# Cross-platform build (e.g., ARM on x86)
+TARGET_PLATFORM=linux/arm64 ./hack/local-hermeto-build.sh -d . -i <your-registry>/backstage-operator:tag
+
+# Plugin installer (separate cache under /tmp/hermeto-cache/plugin-installer)
+make dp-installer-hermetic-build
+```
+
+Or use the Makefile shortcut:
+```sh
+make hermetic-build IMG=<your-registry>/backstage-operator:tag
+```
+
+CI runs hermetic builds automatically on every PR and push to main/release branches.
 
 #### Deploy or update the Catalog Source
 
